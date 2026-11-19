@@ -260,6 +260,68 @@ Window
     url: mainWindow.webUrl
     focus: true
     property string currentHoveredUrl: ""
+
+    // The origin of the Jellyfin server the user picked. Only it, and the app's own pages, get the native
+    // bridge (web channel), which can control the player, read and write settings, and open URLs.
+    // Other sites the view visits, such as the identity provider during a single sign-on login, do not.
+    property string trustedOrigin: ""
+
+    function originOf(url)
+    {
+      var match = /^([a-z][a-z0-9+.-]*):\/\/([^\/?#]*)/i.exec(url.toString());
+      return match ? (match[1] + "://" + match[2]).toLowerCase() : "";
+    }
+
+    function isLocalUrl(url)
+    {
+      var scheme = url.toString().split(":")[0].toLowerCase();
+      return scheme === "qrc" || scheme === "file" || scheme === "about" || scheme === "data";
+    }
+
+    function isTrustedNavigation(url)
+    {
+      if (isLocalUrl(url))
+        return true;
+
+      var origin = originOf(url);
+      if (origin === "")
+        return false;
+
+      // Leaving the app's server picker (or the very first page) for a server: that is the server the user chose.
+      var current = web.url.toString();
+      if (current === "" || isLocalUrl(current))
+      {
+        web.trustedOrigin = origin;
+        return true;
+      }
+
+      if (origin === web.trustedOrigin)
+        return true;
+
+      var savedServer = components.settings.value("main", "userWebClient");
+      if (savedServer && origin === originOf(savedServer))
+      {
+        web.trustedOrigin = origin;
+        return true;
+      }
+
+      return false;
+    }
+
+    onNavigationRequested: function(request)
+    {
+      if (!request.isMainFrame)
+        return;
+
+      var trusted = isTrustedNavigation(request.url);
+      var channel = trusted ? webChannelObject : null;
+      if (web.webChannel !== channel)
+      {
+        console.log((trusted ? "Enabling" : "Disabling") + " the native bridge for " + originOf(request.url));
+        web.webChannel = channel;
+      }
+    }
+
     onLinkHovered: function(hoveredUrl)
     {
       web.currentHoveredUrl = hoveredUrl;

@@ -218,6 +218,13 @@ async function createApi() {
         document.addEventListener('DOMContentLoaded', resolve);
     });
 
+    // Pages other than the Jellyfin server (such as an identity provider during single sign-on) are not given the
+    // native bridge. Do nothing there.
+    if (!window.qt || !window.qt.webChannelTransport) {
+        console.info('Native bridge not available on this page.');
+        return new Promise(() => {});
+    }
+
     const channel = await new Promise((resolve) => {
         /*global QWebChannel */
         new QWebChannel(window.qt.webChannelTransport, resolve);
