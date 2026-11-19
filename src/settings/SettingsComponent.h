@@ -105,6 +105,7 @@ public:
   void registerSection(SettingsSection* section);
 
 private:
+  bool confirmSensitiveChange(const QString& sectionID, const QString& key, const QVariant& value);
   explicit SettingsComponent(QObject *parent = nullptr);
   bool loadDescription();
   void parseSection(const QJsonObject& sectionObject);

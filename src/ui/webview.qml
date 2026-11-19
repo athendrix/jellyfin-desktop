@@ -398,7 +398,20 @@ Window
         console.log("WebEngineLoadRequest success: " + loadingInfo.url);
         Qt.callLater(reapplyTransparentBackground);
       }
-      else if (loadingInfo.status == WebEngineView.LoadFailedStatus)
+      else if (loadingInfo.status == WebEngineView.LoadFailedStatus || loadingInfo.status == WebEngineView.LoadStoppedStatus)
+      {
+        // A navigation away from the server that never completed (a download, an external protocol, a cancelled
+        // sign-in) withdrew the bridge from a page that is still the server's: load it again with the bridge.
+        if (web.webChannel === null && isTrustedUrl(web.url))
+        {
+          console.log("Restoring the native bridge for " + originOf(web.url));
+          web.webChannel = webChannelObject;
+          web.reload();
+          return;
+        }
+      }
+
+      if (loadingInfo.status == WebEngineView.LoadFailedStatus)
       {
         console.log("WebEngineLoadRequest failure: " + loadingInfo.url + " error code: " + loadingInfo.errorCode);
         errorLabel.visible = true
@@ -411,10 +424,12 @@ Window
 
     onNewWindowRequested:
     {
-      if (request.userInitiated)
+      // Opens the URL the page asked for (not the last link hovered), and only from the user's server; the
+      // native side only opens web links.
+      if (request.userInitiated && isTrustedUrl(web.url))
       {
-        console.log("Opening external URL: " + web.currentHoveredUrl)
-        components.system.openExternalUrl(web.currentHoveredUrl)
+        console.log("Opening external URL: " + request.requestedUrl)
+        components.system.openExternalUrl(request.requestedUrl.toString())
       }
     }
 

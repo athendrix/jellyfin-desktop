@@ -494,7 +494,16 @@ QStringList SystemComponent::networkAddresses() const
 /////////////////////////////////////////////////////////////////////////////////////////
 void SystemComponent::openExternalUrl(const QString& url)
 {
-  QDesktopServices::openUrl(QUrl(url));
+  // Web links only: file:, UNC paths and other schemes would let a page open (and on Windows run) local or
+  // network files, or launch protocol handlers.
+  QUrl target(url);
+  if (!target.isValid() || (target.scheme() != "http" && target.scheme() != "https"))
+  {
+    qWarning() << "Refusing to open external URL:" << url;
+    return;
+  }
+
+  QDesktopServices::openUrl(target);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -615,7 +624,15 @@ void SystemComponent::fetchPageForCSPWorkaround(QString url)
 {
   qDebug() << "fetchPageForCSPWorkaround:" << url;
 
-  QNetworkRequest request(url);
+  // Server pages only: QNetworkAccessManager also reads file: and qrc: URLs, and the result goes back to the page.
+  QUrl target(url);
+  if (!target.isValid() || (target.scheme() != "http" && target.scheme() != "https"))
+  {
+    qWarning() << "Refusing to fetch:" << url;
+    return;
+  }
+
+  QNetworkRequest request(target);
   request.setHeader(QNetworkRequest::UserAgentHeader, getUserAgent());
   request.setRawHeader("Cache-Control", "no-cache");
 
@@ -663,7 +680,10 @@ void SystemComponent::fetchPageForCSPWorkaround(QString url)
         qDebug() << "No CSP detected for" << url;
       }
 
-      emit pageContentReady(html, finalUrl, hadCSP);
+      // The page body is not needed by anyone listening (only the final URL and the CSP flag are), and handing
+      // it to the web page would let it read responses it could not read itself.
+      Q_UNUSED(html);
+      emit pageContentReady(QString(), finalUrl, hadCSP);
     } else {
       qCritical() << "fetchPageForCSPWorkaround: fetch failed:" << reply->errorString();
     }

@@ -307,9 +307,16 @@ void PlayerComponent::queueMedia(const QString& url, const QVariantMap& options,
   m_mediaFrameRate = metadata["frameRate"].toFloat(); // returns 0 on failure
   m_serverMediaInfo = metadata["media"].toMap();
 
+  // Only network streams: mpv also opens local files and special protocols (edl://, av://, file shares).
+  QUrl qurl = url;
+  if (qurl.scheme() != "http" && qurl.scheme() != "https")
+  {
+    qWarning() << "PlayerComponent::queueMedia: refusing to play" << url;
+    return;
+  }
+
   updateVideoConfiguration();
 
-  QUrl qurl = url;
   QString host = qurl.host();
 
   QStringList command;
@@ -341,7 +348,10 @@ void PlayerComponent::queueMedia(const QString& url, const QVariantMap& options,
 
   QString userAgent = metadata["headers"].toMap()["User-Agent"].toString();
   if (userAgent.size())
-    extraArgs += "user-agent=" + userAgent + ",";
+  {
+    // mpv's %length% quoting, so a comma in the value cannot add options of its own.
+    extraArgs += "user-agent=%" + QString::number(userAgent.toUtf8().size()) + "%" + userAgent + ",";
+  }
 
   // Make sure the list of requested codecs is reset.
   extraArgs += "ad=,";
@@ -1045,6 +1055,13 @@ void PlayerComponent::reselectStream(const QVariant &streamSelection, MediaType 
 
   if (!streamName.isEmpty())
   {
+    QUrl streamUrl(streamName);
+    if (streamUrl.scheme() != "http" && streamUrl.scheme() != "https")
+    {
+      qWarning() << "PlayerComponent::reselectStream: refusing external stream" << streamName;
+      return;
+    }
+
     auto streams = findStreamsForURL(streamName);
     if (streams.isEmpty())
     {
@@ -1569,6 +1586,38 @@ void PlayerComponent::updateConfiguration()
 /////////////////////////////////////////////////////////////////////////////////////////
 void PlayerComponent::userCommand(QString command)
 {
+  // Reachable from the web page (and from key bindings through "host:player"). mpv commands include "run",
+  // "subprocess" and "load-script", and properties include output files, so only plain playback commands on
+  // playback properties are allowed, one command at a time.
+  static const QStringList allowedCommands = {
+    "seek", "revert-seek", "frame-step", "frame-back-step", "sub-seek", "sub-step",
+    "cycle", "add", "multiply", "playlist-next", "playlist-prev", "show-text", "show-progress"
+  };
+  static const QStringList propertyCommands = { "cycle", "add", "multiply" };
+  static const QStringList allowedProperties = {
+    "pause", "mute", "volume", "speed", "aid", "sid", "vid", "secondary-sid", "sub-visibility", "sub-delay",
+    "audio-delay", "sub-scale", "sub-pos", "fullscreen", "video-aspect-override", "deinterlace", "loop-file",
+    "video-rotate", "panscan", "video-zoom"
+  };
+  static const QStringList prefixes = { "no-osd", "osd-auto", "osd-bar", "osd-msg", "osd-msg-bar" };
+
+  if (command.contains(';') || command.contains('\n') || command.contains('\r') || command.contains('$'))
+  {
+    qWarning() << "Refusing player command:" << command;
+    return;
+  }
+
+  QStringList words = command.split(' ', Qt::SkipEmptyParts);
+  while (!words.isEmpty() && prefixes.contains(words.first()))
+    words.removeFirst();
+
+  if (words.isEmpty() || !allowedCommands.contains(words.first())
+      || (propertyCommands.contains(words.first()) && (words.size() < 2 || !allowedProperties.contains(words[1]))))
+  {
+    qWarning() << "Refusing player command:" << command;
+    return;
+  }
+
   QByteArray cmdUtf8 = command.toUtf8();
   mpv_command_string(m_mpv->mpv(), cmdUtf8.data());
 }

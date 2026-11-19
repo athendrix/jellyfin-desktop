@@ -104,7 +104,6 @@ public:
 
   inline QString authenticationToken() { return m_authenticationToken; }
 
-  Q_INVOKABLE void crashApp();
 
   void updateScale(qreal scale);
 
@@ -141,6 +140,9 @@ private:
   QTimer* m_connectivityRetryTimer;
   QString m_pendingConnectivityUrl;
 
+private Q_SLOTS:
+  // A debugging aid bound to a key ("host:crash!"); not public, so the web page cannot call it.
+  void crashApp();
 };
 
 #endif

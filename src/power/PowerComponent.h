@@ -24,7 +24,8 @@ public:
     { }
 
   bool componentInitialize() override;
-  bool componentExport() override { return true; }
+  // Not exposed to the web page, which does not use it: it could otherwise power off or reboot the computer.
+  bool componentExport() override { return false; }
   const char* componentName() override { return "power"; }
   void componentPostInitialize() override;
 

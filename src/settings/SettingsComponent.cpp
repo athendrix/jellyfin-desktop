@@ -1,5 +1,6 @@
 #include <QDebug>
 #include <QFile>
+#include <QMessageBox>
 #include <QFileInfo>
 #include "SettingsComponent.h"
 #include "SettingsSection.h"
@@ -374,6 +375,46 @@ QVariant SettingsComponent::value(const QString& sectionID, const QString &key)
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+// Settings that decide which pages the app trusts, whether certificates are checked, and which options the player
+// gets (which can write files and run programs) are only changed after the user confirms it. The web page can call
+// setValue and setValues, so without this a script in the page could change them silently and permanently.
+bool SettingsComponent::confirmSensitiveChange(const QString& sectionID, const QString& key, const QVariant& value)
+{
+  QString what;
+  if (sectionID == SETTINGS_SECTION_PATH)
+    what = tr("where the app loads its pages from");
+  else if (sectionID == SETTINGS_SECTION_OTHER && key == "other_conf")
+    what = tr("the advanced player (mpv) options");
+  else if (sectionID == SETTINGS_SECTION_MAIN && key == "ignoreSSLErrors" && value.toBool())
+    what = tr("certificate checking (turning it off)");
+  else if (sectionID == SETTINGS_SECTION_MAIN && key == "userWebClient" && !value.toString().isEmpty())
+    what = tr("the server the app connects to");
+  else
+    return true;
+
+  SettingsSection* section = getSection(sectionID);
+  if (section && section->value(key) == value)
+    return true;
+
+  QString shown = value.toString();
+  if (shown.size() > 500)
+    shown = shown.left(500) + QStringLiteral("…");
+
+  QMessageBox box;
+  box.setIcon(QMessageBox::Warning);
+  box.setWindowTitle(tr("Confirm setting change"));
+  box.setText(tr("Change %1?").arg(what));
+  box.setInformativeText(tr("New value:\n%1\n\nOnly allow this if you are changing it yourself.").arg(shown));
+  box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+  box.setDefaultButton(QMessageBox::No);
+  if (box.exec() == QMessageBox::Yes)
+    return true;
+
+  qWarning() << "Change of setting" << sectionID << key << "refused by the user";
+  return false;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
 void SettingsComponent::setValue(const QString& sectionID, const QString &key, const QVariant &value)
 {
   SettingsSection* section = getSection(sectionID);
@@ -382,6 +423,8 @@ void SettingsComponent::setValue(const QString& sectionID, const QString &key, c
     qCritical() << "Section" << sectionID << "is unknown";
     return;
   }
+  if (!confirmSensitiveChange(sectionID, key, value))
+    return;
   section->setValue(key, value);
   saveSection(section);
 }
@@ -408,9 +451,21 @@ void SettingsComponent::setValues(const QVariantMap& options)
     }
 
     if (values.isNull())
+    {
       section->resetValues();
+    }
     else
-      section->setValues(values);
+    {
+      QVariantMap map = values.toMap();
+      for (auto it = map.begin(); it != map.end();)
+      {
+        if (confirmSensitiveChange(key, it.key(), it.value()))
+          ++it;
+        else
+          it = map.erase(it);
+      }
+      section->setValues(map);
+    }
 
     saveSection(section);
   }

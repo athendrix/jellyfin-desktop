@@ -238,7 +238,8 @@ void InputComponent::remapInput(const QString &source, const QString &keycode, I
     else
     {
       qDebug() << "Web Client has not connected, handling input in host instead.";
-      executeActions(queuedActions);
+      for (const auto& action : queuedActions)
+        handleAction(action);
     }
   }
 }
@@ -246,8 +247,18 @@ void InputComponent::remapInput(const QString &source, const QString &keycode, I
 /////////////////////////////////////////////////////////////////////////////////////////
 void InputComponent::executeActions(const QStringList& actions)
 {
-  for (auto action : actions)
+  // Called by the web page. Host actions run native code (power off, reboot, player commands, scripts), so the page
+  // may only use the one it needs; key bindings run theirs directly.
+  for (const auto& action : actions)
+  {
+    if (action.startsWith("host:") && action != "host:fullscreen")
+    {
+      qWarning() << "Refusing host action from the web page:" << action;
+      continue;
+    }
+
     handleAction(action);
+  }
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
