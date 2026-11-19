@@ -1,0 +1,69 @@
+name: Fork release
+
+# Publishes the Windows installer, the Windows portable ZIP and the Linux AppImage built from master as a GitHub
+# release named "latest", so they can be downloaded without signing in and do not expire like workflow artifacts.
+#
+# The builds themselves are the existing build-windows and build-appimage workflows, which run on every push to
+# master. This workflow runs when one of them finishes and attaches its files to the release.
+
+on:
+  workflow_run:
+    workflows:
+      - build-windows
+      - build-appimage
+    types:
+      - completed
+    branches:
+      - master
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Download the build's files
+        run: |
+          mkdir -p files
+          gh run download "$RUN_ID" --dir files
+          find files -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.AppImage' \) -print
+
+      - name: Create or move the "latest" release
+        run: |
+          if ! gh release view latest >/dev/null 2>&1; then
+            gh release create latest --prerelease --target "$HEAD_SHA" --title "Latest build" \
+              --notes "Built automatically from master."
+          fi
+
+          # Point the tag at the commit these files were built from.
+          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/latest" -f sha="$HEAD_SHA" -F force=true >/dev/null \
+            || gh api -X POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/latest -f sha="$HEAD_SHA" >/dev/null
+          gh release edit latest --notes "Built automatically from master at ${HEAD_SHA}."
+
+      - name: Upload the files
+        run: |
+          # Replace the files of the same kind from the previous build (their names contain the version).
+          kinds=()
+          find files -type f -name '*.exe' | grep -q . && kinds+=('\.exe$')
+          find files -type f -name '*.zip' | grep -q . && kinds+=('\.zip$')
+          find files -type f -name '*.AppImage' | grep -q . && kinds+=('\.AppImage$')
+          for kind in "${kinds[@]}"; do
+            gh release view latest --json assets --jq '.assets[].name' | grep -E "$kind" | while read -r old; do
+              gh release delete-asset latest "$old" --yes
+            done
+          done
+
+          find files -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.AppImage' \) -print0 \
+            | xargs -0 -r gh release upload latest --clobber
