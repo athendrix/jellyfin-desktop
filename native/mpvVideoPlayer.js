@@ -122,6 +122,25 @@
              * @type {Array<{start: number, end: number}>}
              */
             this._bufferedRanges = [];
+            /**
+             * mpv's buffering percentage while it is buffering, null otherwise.
+             * @type {number | null}
+             */
+            this._bufferingPercent = null;
+            /**
+             * Whether mpv has reported a playback position for the current media.
+             * @type {boolean}
+             */
+            this._positionKnown = false;
+            /**
+             * Resolves the promise returned by play() once mpv has actually opened the media.
+             * @type {(() => void) | null}
+             */
+            this._pendingPlayResolve = null;
+            /**
+             * @type {ReturnType<typeof setTimeout> | null}
+             */
+            this._pendingPlayTimeout = null;
 
             /**
              * @private
@@ -145,6 +164,14 @@
                     this._timeUpdated = true;
                 }
 
+                if (!this._positionKnown && typeof time === 'number') {
+                    this._positionKnown = true;
+                    if (this._paused) {
+                        // Opened while paused.
+                        this.resolvePendingPlay();
+                    }
+                }
+
                 this._currentTime = time;
                 this.events.trigger(this, 'timeupdate');
             };
@@ -153,6 +180,9 @@
              * @private
              */
             this.onPlaying = () => {
+                this._bufferingPercent = null;
+                this.resolvePendingPlay();
+
                 if (!this._started) {
                     this._started = true;
 
@@ -194,13 +224,38 @@
              * @private
              */
             this.onPause = () => {
+                this._bufferingPercent = null;
                 this._paused = true;
+                // mpv can report a pause carried over from the previous item before the new one is open,
+                // so a pause only means the media is open once mpv knows the playback position.
+                if (this._positionKnown) {
+                    this.resolvePendingPlay();
+                }
                 // For Syncplay ready notification
                 this.events.trigger(this, 'pause');
             };
 
-            this.onWaiting = () => {
-                this.events.trigger(this, 'waiting');
+            /**
+             * @private
+             * @param percent {number} How full mpv's cache is, from 0 to 100.
+             */
+            this.onBuffering = (percent) => {
+                const wasBuffering = this._bufferingPercent !== null;
+                this._bufferingPercent = percent;
+
+                // Tell SyncPlay (and the OSD) when playback stalls. The initial load is covered by play()
+                // only resolving once the media is open, so only stalls during playback count here.
+                if (!wasBuffering && this._started) {
+                    this.events.trigger(this, 'waiting');
+                }
+            };
+
+            /**
+             * @private
+             */
+            this.onStopped = () => {
+                this._bufferingPercent = null;
+                this.resolvePendingPlay();
             };
 
             /**
@@ -208,6 +263,8 @@
              * @param e {Event} The event received from the `<video>` element
              */
             this.onError = async (error) => {
+                this._bufferingPercent = null;
+                this.resolvePendingPlay();
                 this.removeMediaDialog();
                 console.error(`media error: ${error}`);
 
@@ -245,11 +302,43 @@
             return this._currentSrc;
         }
 
+        /**
+         * @private
+         */
+        resolvePendingPlay() {
+            if (this._pendingPlayTimeout) {
+                clearTimeout(this._pendingPlayTimeout);
+                this._pendingPlayTimeout = null;
+            }
+
+            const resolve = this._pendingPlayResolve;
+            this._pendingPlayResolve = null;
+            if (resolve) {
+                resolve();
+            }
+        }
+
+        /**
+         * How far along mpv is in buffering, for SyncPlay's loading progress. Null when unknown.
+         * @returns {number | null} Progress between 0 and 1.
+         */
+        getSyncPlayLoadProgress() {
+            if (this._bufferingPercent === null || typeof this._bufferingPercent !== 'number') {
+                return null;
+            }
+            return Math.min(1, Math.max(0, this._bufferingPercent / 100));
+        }
+
         async play(options) {
+            // A previous play() that never got to open its media is over.
+            this.resolvePendingPlay();
+
             this._started = false;
             this._timeUpdated = false;
+            this._positionKnown = false;
             this._currentTime = null;
             this._bufferedRanges = [];
+            this._bufferingPercent = null;
 
             this.resetSubtitleOffset();
             if (options.fullscreen) {
@@ -356,12 +445,21 @@
 
                 console.log('[MPV] Mapped audio index:', this._audioTrackIndexToSetOnPlaying, '->', audioRelIndex);
 
+                // Resolve once mpv has opened the media and starts (or is paused at) the requested position,
+                // not as soon as the load was requested. jellyfin-web reports playback as started when this
+                // resolves, and SyncPlay tells the group this client is ready at that point; resolving early
+                // made the group start while this client was still loading.
+                this._pendingPlayResolve = resolve;
+                this._pendingPlayTimeout = setTimeout(() => {
+                    console.warn('[MPV] media did not open within 5 minutes, reporting playback as started anyway');
+                    this.resolvePendingPlay();
+                }, 5 * 60 * 1000);
+
                 player.load(val,
                     { startMilliseconds: ms, autoplay: true },
                     streamdata,
                     audioRelIndex,
-                    subtitleParam,
-                    resolve);
+                    subtitleParam);
             });
         }
 
@@ -559,12 +657,11 @@
                     player.paused.connect(this.onPause);
                     player.bufferedRangesUpdated.connect(this.onBufferedRangesUpdated);
 
+                    player.buffering.connect(this.onBuffering);
+                    player.stopped.connect(this.onStopped);
+
                     // Log all other signals
-                    player.buffering.connect((percent) => {
-                        console.log(`[MPV Signal] buffering: ${percent}`);
-                    });
                     player.canceled.connect(() => console.log('[MPV Signal] canceled'));
-                    player.stopped.connect(() => console.log('[MPV Signal] stopped'));
                     player.stateChanged.connect((newState, oldState) => console.log(`[MPV Signal] stateChanged: ${oldState} -> ${newState}`));
                     player.videoPlaybackActive.connect((active) => console.log(`[MPV Signal] videoPlaybackActive: ${active}`));
                     player.windowVisible.connect((visible) => console.log(`[MPV Signal] windowVisible: ${visible}`));

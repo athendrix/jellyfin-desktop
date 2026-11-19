@@ -300,6 +300,10 @@ void PlayerComponent::queueMedia(const QString& url, const QVariantMap& options,
 
   InputComponent::Get().cancelAutoRepeat();
 
+  // Report the first position of the new media even if it is close to the last one reported for the
+  // previous media: the web client treats the first position update as "the media is open".
+  m_lastPositionUpdateMs = -1;
+
   m_mediaFrameRate = metadata["frameRate"].toFloat(); // returns 0 on failure
   m_serverMediaInfo = metadata["media"].toMap();
 
