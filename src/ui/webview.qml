@@ -274,11 +274,12 @@ Window
 
     function isLocalUrl(url)
     {
+      // Only the app's own pages. about: and data: pages take on the origin of whatever opened them.
       var scheme = url.toString().split(":")[0].toLowerCase();
-      return scheme === "qrc" || scheme === "file" || scheme === "about" || scheme === "data";
+      return scheme === "qrc" || scheme === "file";
     }
 
-    function isTrustedNavigation(url)
+    function isTrustedUrl(url)
     {
       if (isLocalUrl(url))
         return true;
@@ -287,25 +288,21 @@ Window
       if (origin === "")
         return false;
 
-      // Leaving the app's server picker (or the very first page) for a server: that is the server the user chose.
-      var current = web.url.toString();
-      if (current === "" || isLocalUrl(current))
-      {
-        web.trustedOrigin = origin;
-        return true;
-      }
-
       if (origin === web.trustedOrigin)
         return true;
 
       var savedServer = components.settings.value("main", "userWebClient");
-      if (savedServer && origin === originOf(savedServer))
-      {
-        web.trustedOrigin = origin;
-        return true;
-      }
+      return !!savedServer && origin === originOf(savedServer);
+    }
 
-      return false;
+    function updateWebChannel(trusted, url)
+    {
+      var channel = trusted ? webChannelObject : null;
+      if (web.webChannel !== channel)
+      {
+        console.log((trusted ? "Enabling" : "Disabling") + " the native bridge for " + originOf(url));
+        web.webChannel = channel;
+      }
     }
 
     onNavigationRequested: function(request)
@@ -313,13 +310,26 @@ Window
       if (!request.isMainFrame)
         return;
 
-      var trusted = isTrustedNavigation(request.url);
-      var channel = trusted ? webChannelObject : null;
-      if (web.webChannel !== channel)
+      // Leaving the app's server picker (or the very first page) for a server, by the user's choice rather than by a
+      // redirect: that is the server the user picked.
+      var current = web.url.toString();
+      if ((current === "" || isLocalUrl(current))
+          && request.navigationType !== WebEngineNavigationRequest.RedirectNavigation
+          && !isLocalUrl(request.url))
       {
-        console.log((trusted ? "Enabling" : "Disabling") + " the native bridge for " + originOf(request.url));
-        web.webChannel = channel;
+        web.trustedOrigin = originOf(request.url);
       }
+
+      // Withdraw the bridge before an untrusted page can load. It is only given back once a trusted page has
+      // actually replaced the current one (onUrlChanged), so a navigation that is requested but never completes
+      // cannot hand it to the page that requested it.
+      if (!isTrustedUrl(request.url))
+        updateWebChannel(false, request.url);
+    }
+
+    onUrlChanged:
+    {
+      updateWebChannel(isTrustedUrl(web.url), web.url);
     }
 
     onLinkHovered: function(hoveredUrl)
@@ -513,7 +523,9 @@ Window
     }
   }
 
-  property QtObject webChannel: web.webChannel
+  // The C++ side registers its components on this channel at startup. It is the same object whether or not the
+  // current page is given it.
+  property QtObject webChannel: webChannelObject
 
   Labs.SystemTrayIcon {
     visible: showSystemTrayIcon
